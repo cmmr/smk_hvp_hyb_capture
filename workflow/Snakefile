@@ -1,0 +1,659 @@
+"""
+Snakemake pipeline for hybrid capture virome sequencing analysis.
+Decompresses reads and runs EsViritu for viral detection. 
+Also runs iav_serotype, mpoxclade, and extracts SARS-CoV-2 reads for later analyses.
+
+Version: 0.1.6
+"""
+
+__version__ = "0.1.6"
+
+import os
+import sys
+from pathlib import Path
+
+import pandas as pd
+from snakemake.utils import min_version
+
+min_version("8.0")
+
+shell.prefix("set -eo pipefail; ")
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+configfile: "config/config.yaml"
+
+
+# -----------------------------------------------------------------------------
+# Global options from config
+# -----------------------------------------------------------------------------
+POOL_ID = config["pool_id"]
+SAMPLE_SHEET = config["sample_sheet"]
+ESVIRITU_DB = config["esviritu_db"]
+VECTOR_FASTA = config["vector_fasta"]
+IAV_SEROTYPE_DB = config["iav_serotype_db"]
+MPOXCLADE_DB = config["mpoxclade_db"]
+
+OUTPUT_ROOT = Path(config.get("output_root", "results"))
+TEMP_ROOT = OUTPUT_ROOT / "temp"
+ESVIRITU_ROOT = OUTPUT_ROOT / "esviritu"
+IAV_ROOT = OUTPUT_ROOT / "iav_serotype"
+MPOX_ROOT = OUTPUT_ROOT / "mpoxclade"
+VIRUS_READS_ROOT = OUTPUT_ROOT / "virus_reads"
+
+DECOMPRESS_THREADS = config.get("decompress_threads", 8)
+FASTP_THREADS = config.get("fastp_threads", 16)
+VRR_THREADS = config.get("vrr_threads", 8)
+ESVIRITU_THREADS = config.get("esviritu_threads", 8)
+IAV_SEROTYPE_THREADS = config.get("iav_serotype_threads", 8)
+MPOXCLADE_THREADS = config.get("mpoxclade_threads", 8)
+SARS_COV2_THREADS = config.get("sars_cov2_threads", 4)
+
+DECOMPRESS_MEM_MB = config.get("decompress_mem_mb", 8000)
+FASTP_MEM_MB = config.get("fastp_mem_mb", 16000)
+VRR_MEM_MB = config.get("vrr_mem_mb", 8000)
+ESVIRITU_MEM_MB = config.get("esviritu_mem_mb", 8000)
+IAV_SEROTYPE_MEM_MB = config.get("iav_serotype_mem_mb", 8000)
+MPOXCLADE_MEM_MB = config.get("mpoxclade_mem_mb", 8000)
+SARS_COV2_MEM_MB = config.get("sars_cov2_mem_mb", 4000)
+
+
+# =============================================================================
+# Sample sheet parsing
+# =============================================================================
+def load_sample_sheet(path):
+    """Load and validate sample sheet, returning a DataFrame."""
+    df = pd.read_csv(path, sep="\t", dtype=str)
+    required_cols = ["Sample_ID", "forward_read", "reverse_read", "read_compression", "category"]
+    missing = set(required_cols) - set(df.columns)
+    if missing:
+        sys.exit(f"[ERROR] Sample sheet missing required columns: {missing}")
+    
+    # Create unique_id by combining sample_id and pool_id
+    df["unique_id"] = df["Sample_ID"].apply(lambda x: f"{x}.{POOL_ID}")
+    return df
+
+
+SAMPLES = load_sample_sheet(SAMPLE_SHEET)
+
+# Build lookup dictionaries for easy access in rules
+SAMPLE_INFO = SAMPLES.set_index("unique_id").to_dict(orient="index")
+UNIQUE_IDS = SAMPLES["unique_id"].tolist()
+CATEGORIES = SAMPLES["category"].unique().tolist()
+
+sys.stderr.write(f"[INFO] Loaded {len(UNIQUE_IDS)} samples from {SAMPLE_SHEET}\n")
+
+
+# =============================================================================
+# Helper functions
+# =============================================================================
+def get_sample_attr(wildcards, attr):
+    """Get attribute for a sample by unique_id."""
+    return SAMPLE_INFO[wildcards.unique_id][attr]
+
+
+def get_compression_type(wildcards):
+    """Return compression type for a sample."""
+    return get_sample_attr(wildcards, "read_compression")
+
+
+def get_r1_input(wildcards):
+    """Get forward read path for a sample."""
+    return get_sample_attr(wildcards, "forward_read")
+
+
+def get_r2_input(wildcards):
+    """Get reverse read path for a sample."""
+    return get_sample_attr(wildcards, "reverse_read")
+
+
+def get_category(wildcards):
+    """Get category for a sample."""
+    return get_sample_attr(wildcards, "category")
+
+
+def get_esviritu_outputs_for_category(wildcards):
+    """Get all EsViritu info.tsv outputs for a given category."""
+    category_samples = SAMPLES[SAMPLES["category"] == wildcards.category]["unique_id"].tolist()
+    return expand(
+        str(ESVIRITU_ROOT / wildcards.category / f"esviritu_{POOL_ID}" / "{unique_id}.detected_virus.info.tsv"),
+        unique_id=category_samples,
+    )
+
+
+def get_iav_outputs_for_category(wildcards):
+    """Get all IAV serotype summary outputs for a given category."""
+    category_samples = SAMPLES[SAMPLES["category"] == wildcards.category]["unique_id"].tolist()
+    return expand(
+        str(IAV_ROOT / wildcards.category / f"iav_{POOL_ID}" / "{unique_id}" / "{unique_id}_per_serotype_summary.tsv"),
+        unique_id=category_samples,
+    )
+
+
+def get_mpox_outputs_for_category(wildcards):
+    """Get all mpoxclade summary outputs for a given category."""
+    category_samples = SAMPLES[SAMPLES["category"] == wildcards.category]["unique_id"].tolist()
+    return expand(
+        str(MPOX_ROOT / wildcards.category / f"mpox_{POOL_ID}" / "{unique_id}" / "{unique_id}_per_clade_summary.tsv"),
+        unique_id=category_samples,
+    )
+
+
+# =============================================================================
+# Target rules
+# =============================================================================
+rule all:
+    input:
+        # EsViritu outputs
+        expand(
+            str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / "{unique_id}.detected_virus.info.tsv"),
+            zip,
+            unique_id=UNIQUE_IDS,
+            category=SAMPLES["category"].tolist(),
+        ),
+        # IAV serotype outputs
+        expand(
+            str(IAV_ROOT / "{category}" / f"iav_{POOL_ID}" / "{unique_id}" / "{unique_id}_per_serotype_summary.tsv"),
+            zip,
+            unique_id=UNIQUE_IDS,
+            category=SAMPLES["category"].tolist(),
+        ),
+        # Mpoxclade outputs
+        expand(
+            str(MPOX_ROOT / "{category}" / f"mpox_{POOL_ID}" / "{unique_id}" / "{unique_id}_per_clade_summary.tsv"),
+            zip,
+            unique_id=UNIQUE_IDS,
+            category=SAMPLES["category"].tolist(),
+        ),
+        # SARS-CoV-2 read outputs
+        expand(
+            str(VIRUS_READS_ROOT / "{category}" / f"sars_cov2_{POOL_ID}" / "{unique_id}.sars_cov2.R1.fastq"),
+            zip,
+            unique_id=UNIQUE_IDS,
+            category=SAMPLES["category"].tolist(),
+        ),
+        # EsViritu summary per category
+        expand(
+            str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / f"esviritu_{POOL_ID}.detected_virus.info.tsv"),
+            category=CATEGORIES,
+        ),
+        # IAV serotype summary per category
+        expand(
+            str(IAV_ROOT / "{category}" / f"iav_{POOL_ID}" / "iav_serotype_summary.tsv"),
+            category=CATEGORIES,
+        ),
+        # Mpoxclade summary per category
+        expand(
+            str(MPOX_ROOT / "{category}" / f"mpox_{POOL_ID}" / "mpoxclade_summary.tsv"),
+            category=CATEGORIES,
+        ),
+
+
+# =============================================================================
+# Local rules (not submitted to cluster)
+# =============================================================================
+localrules:
+    all,
+    summarize_esviritu,
+    summarize_iav_serotype,
+    summarize_mpoxclade,
+
+
+# =============================================================================
+# Wildcard constraints
+# =============================================================================
+wildcard_constraints:
+    unique_id="|".join(UNIQUE_IDS),
+    category="sample|control",
+
+
+# =============================================================================
+# Module: Preprocessing - Decompression
+# =============================================================================
+rule decompress_reads:
+    """Decompress forward and reverse reads to temporary directory."""
+    input:
+        r1=get_r1_input,
+        r2=get_r2_input,
+    output:
+        r1=temp(str(TEMP_ROOT / "{category}" / "01_decompress" / "{unique_id}.R1.fastq")),
+        r2=temp(str(TEMP_ROOT / "{category}" / "01_decompress" / "{unique_id}.R2.fastq")),
+    log:
+        str(OUTPUT_ROOT / "logs" / "01_decompress" / "{category}" / "{unique_id}.log"),
+    conda:
+        "envs/preprocess.yaml"
+    threads: DECOMPRESS_THREADS
+    resources:
+        mem_mb=DECOMPRESS_MEM_MB,
+        partition="cmmr",
+    params:
+        compression=get_compression_type,
+    shell:
+        """
+        (
+            echo "[$(date)] Decompressing R1: {input.r1}"
+            if [ "{params.compression}" == "gz" ]; then
+                pigz -dc -p {threads} < {input.r1} > {output.r1}
+            elif [ "{params.compression}" == "bz2" ]; then
+                pbzip2 -dc -p{threads} < {input.r1} > {output.r1}
+            else
+                echo "ERROR: Unknown compression type: {params.compression}" >&2
+                exit 1
+            fi
+            
+            echo "[$(date)] Decompressing R2: {input.r2}"
+            if [ "{params.compression}" == "gz" ]; then
+                pigz -dc -p {threads} < {input.r2} > {output.r2}
+            elif [ "{params.compression}" == "bz2" ]; then
+                pbzip2 -p{threads} -dc < {input.r2} > {output.r2}
+            else
+                echo "ERROR: Unknown compression type: {params.compression}" >&2
+                exit 1
+            fi
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Preprocessing - Quality Filtering (fastp)
+# =============================================================================
+rule fastp_qc:
+    """Quality filter reads using fastp."""
+    input:
+        r1=str(TEMP_ROOT / "{category}" / "01_decompress" / "{unique_id}.R1.fastq"),
+        r2=str(TEMP_ROOT / "{category}" / "01_decompress" / "{unique_id}.R2.fastq"),
+    output:
+        r1=temp(str(TEMP_ROOT / "{category}" / "02_fastp" / "{unique_id}.R1.fastq")),
+        r2=temp(str(TEMP_ROOT / "{category}" / "02_fastp" / "{unique_id}.R2.fastq")),
+        html=str(OUTPUT_ROOT / "qc" / "fastp" / "{category}" / "{unique_id}.fastp.html"),
+        json=str(OUTPUT_ROOT / "qc" / "fastp" / "{category}" / "{unique_id}.fastp.json"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "02_fastp" / "{category}" / "{unique_id}.log"),
+    conda:
+        "envs/preprocess.yaml"
+    threads: FASTP_THREADS
+    resources:
+        mem_mb=FASTP_MEM_MB,
+        partition="cmmr",
+    shell:
+        """
+        (
+            echo "[$(date)] Running fastp for {wildcards.unique_id}"
+            
+            fastp \
+                --in1 {input.r1} \
+                --in2 {input.r2} \
+                --out1 {output.r1} \
+                --out2 {output.r2} \
+                --html {output.html} \
+                --json {output.json} \
+                --thread {threads}
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Preprocessing - Vector Read Removal
+# =============================================================================
+rule vector_read_removal:
+    """Remove reads aligning to vector sequences using vrr."""
+    input:
+        r1=str(TEMP_ROOT / "{category}" / "02_fastp" / "{unique_id}.R1.fastq"),
+        r2=str(TEMP_ROOT / "{category}" / "02_fastp" / "{unique_id}.R2.fastq"),
+        ref=VECTOR_FASTA,
+    output:
+        r1=temp(str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R1.fastq")),
+        r2=temp(str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R2.fastq")),
+        csv=str(OUTPUT_ROOT / "qc" / "vrr" / "{category}" / "{unique_id}_primary_alignments.csv"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "03_vrr" / "{category}" / "{unique_id}.log"),
+    conda:
+        "envs/preprocess.yaml"
+    threads: VRR_THREADS
+    resources:
+        mem_mb=VRR_MEM_MB,
+        partition="cmmr",
+    params:
+        out_prefix=lambda wc: str(TEMP_ROOT / wc.category / "03_vrr" / wc.unique_id),
+    shell:
+        """
+        (
+            echo "[$(date)] Running vector read removal for {wildcards.unique_id}"
+            
+            vrr \
+                -1 {input.r1} \
+                -2 {input.r2} \
+                -r {input.ref} \
+                -o {params.out_prefix} \
+                -t {threads} \
+                --nm-threshold 4
+            
+            # vrr outputs as <prefix>_R1.fastq, <prefix>_R2.fastq, and <prefix>_primary_alignments.csv
+            # Move to expected output locations
+            mv {params.out_prefix}_R1.fastq {output.r1}
+            mv {params.out_prefix}_R2.fastq {output.r2}
+            mkdir -p $(dirname {output.csv})
+            mv {params.out_prefix}_primary_alignments.csv {output.csv}
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Virome Analysis - EsViritu
+# =============================================================================
+rule esviritu:
+    """Run EsViritu for viral detection and profiling."""
+    input:
+        r1=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R1.fastq"),
+        r2=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R2.fastq"),
+    output:
+        info=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / "{unique_id}.detected_virus.info.tsv"),
+        assembly=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / "{unique_id}.detected_virus.assembly_summary.tsv"),
+        tax_profile=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / "{unique_id}.tax_profile.tsv"),
+        coverage=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / "{unique_id}.virus_coverage_windows.tsv"),
+        bam=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / "{unique_id}_temp" / "{unique_id}.third.filt.sorted.bam"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "esviritu" / "{category}" / "{unique_id}.log"),
+    conda:
+        "envs/esviritu.yaml"
+    threads: ESVIRITU_THREADS
+    resources:
+        mem_mb=ESVIRITU_MEM_MB,
+        partition="cmmr",
+    params:
+        db=ESVIRITU_DB,
+        out_dir=lambda wc: str(ESVIRITU_ROOT / wc.category / f"esviritu_{POOL_ID}"),
+        sample_name=lambda wc: wc.unique_id,
+    shell:
+        """
+        (
+            echo "[$(date)] Running EsViritu for {wildcards.unique_id}"
+            
+            EsViritu \
+                -r {input.r1} {input.r2} \
+                -s {params.sample_name} \
+                -o {params.out_dir} \
+                --db {params.db} \
+                -q F \
+                --keep T \
+                -t {threads} || true
+            
+            echo "[$(date)] Checking for expected output files..."
+            
+            # Create dummy output files if EsViritu didn't produce them
+            # (e.g., negative controls or samples with no viral hits)
+            if [ ! -f "{output.info}" ]; then
+                echo "[$(date)] Creating empty file: {output.info}"
+                touch "{output.info}"
+            fi
+            if [ ! -f "{output.assembly}" ]; then
+                echo "[$(date)] Creating empty file: {output.assembly}"
+                touch "{output.assembly}"
+            fi
+            if [ ! -f "{output.tax_profile}" ]; then
+                echo "[$(date)] Creating empty file: {output.tax_profile}"
+                touch "{output.tax_profile}"
+            fi
+            if [ ! -f "{output.coverage}" ]; then
+                echo "[$(date)] Creating empty file: {output.coverage}"
+                touch "{output.coverage}"
+            fi
+            if [ ! -f "{output.bam}" ]; then
+                echo "[$(date)] Creating empty file: {output.bam}"
+                touch "{output.bam}"
+            fi
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Virome Analysis - EsViritu Summary
+# =============================================================================
+rule summarize_esviritu:
+    """Summarize all EsViritu runs for a category."""
+    input:
+        get_esviritu_outputs_for_category,
+    output:
+        info=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / f"esviritu_{POOL_ID}.detected_virus.info.tsv"),
+        assembly=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / f"esviritu_{POOL_ID}.detected_virus.assembly_summary.tsv"),
+        tax=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / f"esviritu_{POOL_ID}.tax_profile.tsv"),
+        html=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / f"esviritu_{POOL_ID}_EsViritu_project_reactable.html"),
+        cov=str(ESVIRITU_ROOT / "{category}" / f"esviritu_{POOL_ID}" / f"esviritu_{POOL_ID}.virus_coverage_windows.tsv"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "esviritu_summary" / "{category}.log"),
+    conda:
+        "envs/esviritu.yaml"
+    params:
+        esv_dir=lambda wc: str(ESVIRITU_ROOT / wc.category / f"esviritu_{POOL_ID}"),
+        basename=f"esviritu_{POOL_ID}",
+    shell:
+        """
+        (
+            echo "[$(date)] Summarizing EsViritu runs for {wildcards.category}"
+            
+            # Run summarize_esv_runs (outputs to current working directory)
+            summarize_esv_runs --outdir {params.esv_dir} {params.esv_dir} || true
+            
+            # create empty files if not made by summarize_esv_runs
+            for suffix in .detected_virus.info.tsv .detected_virus.assembly_summary.tsv .tax_profile.tsv _EsViritu_project_reactable.html .virus_coverage_windows.tsv; do
+                outf="{params.esv_dir}/{params.basename}${{suffix}}"
+                if [ ! -f "$outf" ]; then
+                    echo "[$(date)] Creating empty file: $outf"
+                    touch "$outf"
+                fi
+            done
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Virus-specific Analysis - IAV Serotype
+# =============================================================================
+rule iav_serotype:
+    """Run IAV serotype analysis for influenza A classification."""
+    input:
+        r1=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R1.fastq"),
+        r2=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R2.fastq"),
+    output:
+        summary=str(IAV_ROOT / "{category}" / f"iav_{POOL_ID}" / "{unique_id}" / "{unique_id}_per_serotype_summary.tsv"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "iav_serotype" / "{category}" / "{unique_id}.log"),
+    conda:
+        "envs/iav_serotype.yaml"
+    threads: IAV_SEROTYPE_THREADS
+    resources:
+        mem_mb=IAV_SEROTYPE_MEM_MB,
+        partition="cmmr",
+    params:
+        db=IAV_SEROTYPE_DB,
+        out_dir=lambda wc: str(IAV_ROOT / wc.category / f"iav_{POOL_ID}"),
+        sample_name=lambda wc: wc.unique_id,
+    shell:
+        """
+        (
+            echo "[$(date)] Running iav_serotype for {wildcards.unique_id}"
+            
+            iav_serotype \
+                -r {input.r1} {input.r2} \
+                -s {params.sample_name} \
+                -o {params.out_dir} \
+                -q F \
+                --db {params.db} \
+                -t {threads} || true
+            
+            # Create dummy output if iav_serotype didn't produce results
+            if [ ! -f "{output.summary}" ]; then
+                echo "[$(date)] Creating empty file: {output.summary}"
+                touch "{output.summary}"
+            fi
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Virus-specific Analysis - Mpoxclade
+# =============================================================================
+rule mpoxclade:
+    """Run mpoxclade analysis for monkeypox clade classification."""
+    input:
+        r1=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R1.fastq"),
+        r2=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R2.fastq"),
+    output:
+        summary=str(MPOX_ROOT / "{category}" / f"mpox_{POOL_ID}" / "{unique_id}" / "{unique_id}_per_clade_summary.tsv"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "mpoxclade" / "{category}" / "{unique_id}.log"),
+    conda:
+        "envs/mpoxclade.yaml"
+    threads: MPOXCLADE_THREADS
+    resources:
+        mem_mb=MPOXCLADE_MEM_MB,
+        partition="cmmr",
+    params:
+        db=MPOXCLADE_DB,
+        out_dir=lambda wc: str(MPOX_ROOT / wc.category / f"mpox_{POOL_ID}"),
+        sample_name=lambda wc: wc.unique_id,
+    shell:
+        """
+        (
+            echo "[$(date)] Running mpoxclade for {wildcards.unique_id}"
+            
+            mpoxclade \
+                -r {input.r1} {input.r2} \
+                -s {params.sample_name} \
+                -o {params.out_dir} \
+                -q F \
+                --db {params.db} \
+                -t {threads} || true
+            
+            # Create dummy output if mpoxclade didn't produce results
+            if [ ! -f "{output.summary}" ]; then
+                echo "[$(date)] Creating empty file: {output.summary}"
+                touch "{output.summary}"
+            fi
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Virus-specific Summary - IAV Serotype
+# =============================================================================
+rule summarize_iav_serotype:
+    """Summarize all IAV serotype runs for a category."""
+    input:
+        get_iav_outputs_for_category,
+    output:
+        summary=str(IAV_ROOT / "{category}" / f"iav_{POOL_ID}" / "iav_serotype_summary.tsv"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "iav_serotype_summary" / "{category}.log"),
+    conda:
+        "envs/iav_serotype.yaml"
+    params:
+        script=workflow.source_path("scripts/summarize_iav_serotype.py"),
+        input_dir=lambda wc: str(IAV_ROOT / wc.category / f"iav_{POOL_ID}"),
+    shell:
+        """
+        (
+            echo "[$(date)] Summarizing IAV serotype for {wildcards.category}"
+            
+            python {params.script} \
+                --input-dir {params.input_dir} \
+                --output {output.summary}
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Virus-specific Summary - Mpoxclade
+# =============================================================================
+rule summarize_mpoxclade:
+    """Summarize all mpoxclade runs for a category."""
+    input:
+        get_mpox_outputs_for_category,
+    output:
+        summary=str(MPOX_ROOT / "{category}" / f"mpox_{POOL_ID}" / "mpoxclade_summary.tsv"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "mpoxclade_summary" / "{category}.log"),
+    conda:
+        "envs/mpoxclade.yaml"
+    params:
+        script=workflow.source_path("scripts/summarize_mpoxclade.py"),
+        input_dir=lambda wc: str(MPOX_ROOT / wc.category / f"mpox_{POOL_ID}"),
+    shell:
+        """
+        (
+            echo "[$(date)] Summarizing mpoxclade for {wildcards.category}"
+            
+            python {params.script} \
+                --input-dir {params.input_dir} \
+                --output {output.summary}
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """
+
+
+# =============================================================================
+# Module: Virus-specific Reads - SARS-CoV-2
+# =============================================================================
+rule sars_cov2_reads:
+    """Extract SARS-CoV-2 reads from EsViritu alignment."""
+    input:
+        bam=rules.esviritu.output.bam,
+        metadata=f"{ESVIRITU_DB}/virus_pathogen_database.all_metadata.tsv",
+    output:
+        r1=str(VIRUS_READS_ROOT / "{category}" / f"sars_cov2_{POOL_ID}" / "{unique_id}.sars_cov2.R1.fastq"),
+        r2=str(VIRUS_READS_ROOT / "{category}" / f"sars_cov2_{POOL_ID}" / "{unique_id}.sars_cov2.R2.fastq"),
+    log:
+        str(OUTPUT_ROOT / "logs" / "sars_cov2_reads" / "{category}" / "{unique_id}.log"),
+    conda:
+        "envs/sars_cov2.yaml"
+    threads: SARS_COV2_THREADS
+    resources:
+        mem_mb=SARS_COV2_MEM_MB,
+        partition="cmmr",
+    params:
+        script=workflow.source_path("scripts/extract_sars_cov2_reads.py"),
+        species="s__Betacoronavirus pandemicum",
+    shell:
+        """
+        (
+            echo "[$(date)] Extracting SARS-CoV-2 reads for {wildcards.unique_id}"
+            
+            python {params.script} \
+                --bam {input.bam} \
+                --metadata {input.metadata} \
+                --species "{params.species}" \
+                --out-r1 {output.r1} \
+                --out-r2 {output.r2} || true
+            
+            # Create dummy output if no SARS-CoV-2 reads found
+            if [ ! -f "{output.r1}" ]; then
+                echo "[$(date)] Creating empty file: {output.r1}"
+                touch "{output.r1}"
+            fi
+            if [ ! -f "{output.r2}" ]; then
+                echo "[$(date)] Creating empty file: {output.r2}"
+                touch "{output.r2}"
+            fi
+            
+            echo "[$(date)] Done"
+        ) &> {log}
+        """

@@ -1,0 +1,40 @@
+#notes/
+#repos/
+notes/style/
+
+.DS_Store
+**/.DS_Store
+
+# Snakemake runtime files
+.snakemake/
+
+# Pipeline outputs (generated per-run)
+results/
+logs/
+temp/
+tmp/
+
+# Conda environments (can be recreated)
+.conda/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Optional: large data files
+# *.fastq
+# *.fastq.gz
+# *.bam
+# *.bai
