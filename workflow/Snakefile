@@ -2,10 +2,9 @@
 Snakemake pipeline for hybrid capture virome sequencing analysis.
 Decompresses reads, runs EsViritu for viral detection, and quantifies host reads.
 
-Version: 0.1.0
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import os
 import sys

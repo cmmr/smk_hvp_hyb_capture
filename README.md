@@ -1,6 +1,6 @@
 # Snakemake Virome Pipeline for Hybrid Capture Data
 
-**Latest Version: 0.1.0**
+**Latest Version: 0.1.1**
 
 A Snakemake pipeline for processing hybrid capture virome sequencing data. This pipeline decompresses sequencing reads, runs `EsViritu` for viral detection and profiling, and quantifies host reads.
 
