@@ -33,7 +33,7 @@ def detect_compression(filepath: str) -> str:
 def detect_category(sample_id: str) -> str:
     """Detect sample category based on sample ID."""
     # this is the most reasonable heuristic I can think of
-    if 'control' in sample_id.lower() or 'hybrid' in sample_id.lower():
+    if 'control' in sample_id.lower() or 'hybrid' in sample_id.lower() or '-qc-' in sample_id.lower():
         return 'control'
     return 'sample'
 
