@@ -22,6 +22,9 @@ The pipeline performs preprocessing, broad viral detection, and host read quanti
 5. **Calculate Host Reads** — Aligns reads to a host genome (e.g. human) with `minimap2` and counts aligned reads (no files saved)
 6. **Summarize Host Reads** — Aggregates per-sample host read counts into a per-category summary
 
+#### Schematic
+![rulegraph](resources/rulegraph1.png)
+
 ## Requirements
 
 - **Snakemake** ≥ 8.0
