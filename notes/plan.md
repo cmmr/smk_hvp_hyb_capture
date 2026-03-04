@@ -1,5 +1,5 @@
 # Goal
-Make a snakemake pipeline to decompress hybrid capture virome sequencing reads from a sample sheet and run EsViritu.
+Make a snakemake pipeline to decompress hybrid capture virome sequencing reads from a sample sheet, run EsViritu, and quantify host reads.
 
 ## Design notes
 - use snakemake best practices
@@ -18,6 +18,7 @@ Make a snakemake pipeline to decompress hybrid capture virome sequencing reads f
 		- category (sample or control)
 - config file arguments
 	- PoolID
+	- host_genome path
 
 # Modules
 
@@ -34,7 +35,7 @@ Make a snakemake pipeline to decompress hybrid capture virome sequencing reads f
 	- read sample sheet
 		- determine if reads are compressed in .gz or .bz2 format
 		- merge sample_ID and PoolID strings to generate unique_ID
-	- use `pigz` (multithread) or `bunzip2` to uncompress reads to temp directory
+	- use `pigz` (multithread) or `pbzip2` to uncompress reads to temp directory
 - outputs
 	- uncompressed read files path (tempfile)
 	- example output path: r1=str(TEMP_ROOT / "{category}" / "01_decompress" / "{unique_id}.R1.fastq")
@@ -52,7 +53,7 @@ Make a snakemake pipeline to decompress hybrid capture virome sequencing reads f
 - outputs
 	- quality filtered read files path (tempfile)
 
-### remove reads aligning to vector sequences
+### Remove reads aligning to vector sequences
 - inputs
 	- quality filtered read files path
 - config
@@ -78,77 +79,43 @@ Make a snakemake pipeline to decompress hybrid capture virome sequencing reads f
 	- memory 8g
 	- conda env: esviritu
 - actions
-	- use `EsViritu` (from https://github.com/cmmr/EsViritu) with  `-q T --keep T` flags
+	- use `EsViritu` (from https://github.com/cmmr/EsViritu) with  `-q F --keep T` flags
 - outputs
 	- {unique_ID}.detected_virus.info.tsv
 	- {unique_ID}.detected_virus.assembly_summary.tsv
 	- {unique_ID}.tax_profile.tsv
 	- {unique_ID}.virus_coverage_windows.tsv
-	- example output path: r1=str(ESVIRITU_ROOT / "{category}" / "02_esviritu_{PoolID}" / "{unique_id}.{extension}")
+	- example output path: str(ESVIRITU_ROOT / "{category}" / "esviritu_{PoolID}" / "{unique_id}.{extension}")
 
-## Virus-specific analysis
+### Summarize EsViritu
+- inputs
+	- all per-sample EsViritu info.tsv files for a category
+- actions
+	- use `summarize_esv_runs` to concatenate results
+- outputs
+	- esviritu_{PoolID}.detected_virus.info.tsv (per category)
 
-### iav_serotype
+## Host read quantification
+
+### Calculate host reads
 - inputs
 	- vector-removed read files path (tempfile)
 - config
-	- samples output directory
-	- controls output directory
-	- iav_serotype DB path
+	- host genome path
 	- threads: 8
 	- memory 8g
-	- conda env: iav_serotype
+	- conda env: preprocess
 - actions
-	- use `iav_serotype` (from https://github.com/mtisza1/influenza_a_serotype) with default settings
+	- count total input reads (R1 + R2)
+	- align to host genome with `minimap2 -a -x sr` piped to `samtools view -F 4 -c`
+	- no BAM or alignment files saved (pipe only)
 - outputs
-	- {unique_ID}_per_serotype_summary.tsv **<- Main summary table for serotype counts**
-	- {unique_ID}_influenza_A.sorted.bam **<- filtered, sorted alignment file**
-	- {unique_ID}_per_read_summary.tsv **<- per-read summary file**
-	- {unique_ID}_read_serotype_assignment.pdf **<- plot of serotype counts**
-	- {unique_ID}_{serotype}.txt **<- serotype-specific read IDs**
-	- {unique_ID}_{serotype}.R1.fastq **<- serotype-specific reads (optional)**
-	- {unique_ID}_{serotype}.R2.fastq **<- serotype-specific reads (optional)**
-	- {unique_ID}_read_stats.tsv **<- input read stats table**
+	- {unique_ID}_host_read_counts.tsv (columns: unique_id, total_reads, host_aligned_reads)
 
-### mpoxclade
+### Summarize host reads
 - inputs
-	- vector-removed read files path (tempfile)
-- config
-	- samples output directory
-	- controls output directory
-	- mpoxclade DB path
-	- threads: 8
-	- memory 8g
-	- conda env: iav_serotype
+	- all per-sample host_read_counts.tsv files for a category
 - actions
-	- use `mpoxclade` (from mpoxclade repo) with default settings
+	- python script concatenates into one TSV
 - outputs
-	- {unique_ID}_per_clade_summary.tsv **<- Main summary table for serotype counts**
-	- {unique_ID}_mpox.sorted.bam **<- filtered, sorted alignment file**
-	- {unique_ID}_per_read_summary.tsv **<- per-read summary file**
-	- {unique_ID}_read_clade_assignment.pdf **<- plot of serotype counts**
-	- {unique_ID}_{clade}.txt **<- serotype-specific read IDs**
-	- {unique_ID}_{clade}.R1.fastq **<- serotype-specific reads (optional)**
-	- {unique_ID}_{clade}.R2.fastq **<- serotype-specific reads (optional)**
-	- {unique_ID}_read_stats.tsv **<- input read stats table**
-
-## Saving virus-specific reads
-
-## get sars-cov-2 reads
-- inputs
-	- EsViritu output from temp directory: {unique_ID}.third.filt.sorted.bam
-- config
-	- samples output directory
-	- controls output directory
-	- EsViritu DB path
-	- threads: 8
-	- memory 8g
-	- conda env: EsViritu
-- actions
-	- python script that 
-		- gets list of accessions belonging to species "s__Betacoronavirus pandemicum" from EsViritu metadata table
-			- {esviritu_db}/virus_pathogen_database.all_metadata.tsv
-		- uses pysam to retrieve any reads with primary alignments to the selected accessions
-- outputs
-	- {unique_ID}.sars-cov-2.R1.fastq
-	- {unique_ID}.sars-cov-2.R2.fastq
+	- host_reads_summary.tsv (per category)

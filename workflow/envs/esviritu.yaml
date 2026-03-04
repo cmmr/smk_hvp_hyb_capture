@@ -20,4 +20,4 @@ dependencies:
   - r-magrittr
   - r-remotes
   - pip
-  - esviritu=1.1.6
+  - esviritu=1.2.0

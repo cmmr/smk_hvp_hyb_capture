@@ -1,9 +1,0 @@
-name: tephi_virome_sars_cov2
-channels:
-  - conda-forge
-  - bioconda
-dependencies:
-  - python=3.11
-  - polars
-  - pysam
-  - pip

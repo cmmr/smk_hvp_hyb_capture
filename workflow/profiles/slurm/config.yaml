@@ -29,4 +29,4 @@ rerun-incomplete: True
 printshellcmds: True
 scheduler: greedy
 use-conda: True
-conda-prefix: /data/prod/snakemake_envs/tephi_virome
+conda-prefix: /data/prod/snakemake_envs/hvp_hyb_capture

@@ -1,12 +1,14 @@
-# Snakemake Virome Pipeline for TEPHI Wastewater Data
+# Snakemake Virome Pipeline for Hybrid Capture Data
 
-**Latest Version: 0.1.6**
+**Latest Version: 0.1.0**
 
-A Snakemake pipeline for processing hybrid capture virome sequencing data. This pipeline decompresses sequencing reads and runs `EsViritu` for viral detection and profiling. Also runs `iav_serotype`, `mpoxclade`, and extracts SARS-CoV-2 reads for later analyses.
+A Snakemake pipeline for processing hybrid capture virome sequencing data. This pipeline decompresses sequencing reads, runs `EsViritu` for viral detection and profiling, and quantifies host reads.
+
+This repo was forked from `cmmr/smk_tephi_virome` v0.1.6.
 
 ## Overview
 
-The pipeline performs preprocessing, broad viral detection, and virus-specific analyses:
+The pipeline performs preprocessing, broad viral detection, and host read quantification:
 
 ### Preprocessing
 1. **Decompression** — Decompresses `.gz` or `.bz2` compressed FASTQ files using multi-threaded tools (`pigz`/`pbzip2`)
@@ -16,14 +18,9 @@ The pipeline performs preprocessing, broad viral detection, and virus-specific a
 ### Viral Detection
 4. **EsViritu** — Broad viral detection, taxonomic profiling, and coverage analysis
 
-### Virus-Specific Modules
-5. **iav_serotype** — Influenza virus serotype classification using competitive alignment
-6. **mpoxclade** — Monkeypox virus clade classification
-7. **SARS-CoV-2 Reads** — Extraction of SARS-CoV-2 reads from EsViritu alignments (can be used for e.g. `freyja`)
-
-### Rule Graph of pipeline
-
-![rulegraph](resources/rulegraph1.png)
+### Host Read Quantification
+5. **Calculate Host Reads** — Aligns reads to a host genome (e.g. human) with `minimap2` and counts aligned reads (no files saved)
+6. **Summarize Host Reads** — Aggregates per-sample host read counts into a per-category summary
 
 ## Requirements
 
@@ -35,7 +32,7 @@ The pipeline performs preprocessing, broad viral detection, and virus-specific a
 
 ```bash
 # Create a snakemake environment
-conda create -n smk_tephi_virome -c conda-forge snakemake pandas
+conda create -n smk_hvp_hyb_capture -c conda-forge snakemake pandas
 
 # For SLURM support, also install:
 pip install snakemake-executor-plugin-cluster-generic
@@ -55,46 +52,43 @@ python scripts/prepare_sample_sheet.py /path/to/SampleListRaw pool_sample_sheet.
     - Change `pool_id`, `sample_sheet`, `output_root` (use absolute path)
     - Run the snakemake command to process the pool:
 ```bash
-snakemake --snakefile /path/to/smk_tephi_virome/workflow/Snakefile\
+snakemake --snakefile /path/to/smk_hvp_hyb_capture/workflow/Snakefile\
   --configfile /path/to/pool/config.yaml\
-  --profile /path/to/smk_tephi_virome/workflow/profiles/slurm ## uses cluster jobs
+  --profile /path/to/smk_hvp_hyb_capture/workflow/profiles/slurm ## uses cluster jobs
 ```
 
 - OPTION 2 **PREFERRED**- (override config file on terminal). Run the snakemake command to process the pool:
 
 ```bash
-snakemake --snakefile /path/to/smk_tephi_virome/workflow/Snakefile\
-  --configfile /path/to/smk_tephi_virome/config/config.yaml\
+snakemake --snakefile /path/to/smk_hvp_hyb_capture/workflow/Snakefile\
+  --configfile /path/to/smk_hvp_hyb_capture/config/config.yaml\
   --config pool_id="p9999" sample_sheet="/path/to/pool/sample_sheet.tsv" output_root="/path/to/pool" ## not in snakemake directory!
-  --profile /path/to/smk_tephi_virome/workflow/profiles/slurm ## uses cluster jobs
+  --profile /path/to/smk_hvp_hyb_capture/workflow/profiles/slurm ## uses cluster jobs
 ```
 
 Variation with node exclusion. 'slurm_extra' can also be used to shoehorn in other slurm flags:
 
 ```bash
-snakemake --snakefile /path/to/smk_tephi_virome/workflow/Snakefile\
-  --configfile /path/to/smk_tephi_virome/config/config.yaml\
+snakemake --snakefile /path/to/smk_hvp_hyb_capture/workflow/Snakefile\
+  --configfile /path/to/smk_hvp_hyb_capture/config/config.yaml\
   --config pool_id="p9999" sample_sheet="/path/to/pool/sample_sheet.tsv" output_root="/path/to/pool" ## not in snakemake directory!
-  --profile /path/to/smk_tephi_virome/workflow/profiles/slurm\
+  --profile /path/to/smk_hvp_hyb_capture/workflow/profiles/slurm\
   --default-resources slurm_extra="--exclude=cmp02,cmp03"
 ```
 
 ## Directory Structure
 
 ```
-smk_tephi_virome/
+smk_hvp_hyb_capture/
 ├── config/
 │   └── config.yaml           # Pipeline configuration
 ├── workflow/
 │   ├── Snakefile             # Main pipeline definition
 │   ├── scripts/
-│   │   └── extract_sars_cov2_reads.py  # SARS-CoV-2 read extraction
+│   │   └── summarize_host_reads.py  # Host read count summarization
 │   ├── envs/
-│   │   ├── preprocess.yaml   # Conda env for decompression/fastp/vrr
-│   │   ├── esviritu.yaml     # Conda env for EsViritu
-│   │   ├── iav_serotype.yaml # Conda env for IAV serotype
-│   │   ├── mpoxclade.yaml    # Conda env for mpoxclade
-│   │   └── sars_cov2.yaml    # Conda env for SARS-CoV-2 extraction
+│   │   ├── preprocess.yaml   # Conda env for decompression/fastp/vrr/host reads
+│   │   └── esviritu.yaml     # Conda env for EsViritu
 │   └── profiles/
 │       ├── slurm/
 │       │   └── config.yaml   # SLURM cluster profile
@@ -115,10 +109,7 @@ pool_id: "p2026"                                    # Pool identifier (combined 
 sample_sheet: "example_data/p2026_ex_sample_sheet.tsv"  # Path to sample sheet
 esviritu_db: "/path/to/EsViritu/DBs/v3.2.4"        # Path to EsViritu database
 vector_fasta: "resources/vector_sequences.fasta"   # Path to vector sequences for read removal
-
-# Virus-specific database paths
-iav_serotype_db: "/path/to/iav_serotype/liteDB_v1.1"  # IAV serotype database
-mpoxclade_db: "/path/to/mpoxclade/v2.1"               # Mpoxclade database
+host_genome: "/path/to/human/genome.fna"           # Path to host genome for read quantification
 
 # Output directories
 output_root: "results"    # Root output directory
@@ -128,9 +119,7 @@ decompress_threads: 8
 fastp_threads: 16
 vrr_threads: 8
 esviritu_threads: 8
-iav_serotype_threads: 8
-mpoxclade_threads: 8
-sars_cov2_threads: 4
+host_reads_threads: 8
 ```
 
 ## Sample Sheet Format
@@ -162,7 +151,7 @@ Always perform a dry run to verify the pipeline configuration:
 
 ```bash
 # Activate snakemake environment
-conda activate smk_tephi_virome
+conda activate smk_hvp_hyb_capture
 
 # Dry run to see what jobs will be executed
 snakemake --snakefile workflow/Snakefile --configfile config/config.yaml -n
@@ -218,7 +207,7 @@ results/
 │       └── 03_vrr/                 # Vector-removed reads
 ├── qc/
 │   ├── fastp/{category}/           # fastp QC reports (HTML/JSON)
-│   └── vrr/{category}/              # Vector read removal stats
+│   └── vrr/{category}/             # Vector read removal stats
 ├── esviritu/                       # EsViritu output files
 │   └── {category}/esviritu_{pool_id}/
 │       ├── {unique_id}.detected_virus.info.tsv
@@ -226,24 +215,17 @@ results/
 │       ├── {unique_id}.tax_profile.tsv
 │       ├── {unique_id}.virus_coverage_windows.tsv
 │       └── {unique_id}.third.filt.sorted.bam
-├── iav_serotype/                   # IAV serotype results
-│   └── {category}/iav_{pool_id}/
-│       └── {unique_id}_per_serotype_summary.tsv
-├── mpoxclade/                      # Mpoxclade results
-│   └── {category}/mpox_{pool_id}/
-│       └── {unique_id}_per_clade_summary.tsv
-├── virus_reads/                    # Extracted virus-specific reads
-│   └── {category}/sars_cov2_{pool_id}/
-│       ├── {unique_id}.sars_cov2.R1.fastq
-│       └── {unique_id}.sars_cov2.R2.fastq
+├── host_reads/                     # Host read quantification
+│   └── {category}/host_{pool_id}/
+│       ├── {unique_id}_host_read_counts.tsv
+│       └── host_reads_summary.tsv
 └── logs/                           # Log files for each step
     ├── 01_decompress/
     ├── 02_fastp/
     ├── 03_vrr/
     ├── esviritu/
-    ├── iav_serotype/
-    ├── mpoxclade/
-    └── sars_cov2_reads/
+    ├── host_reads/
+    └── host_reads_summary/
 ```
 
 ### Output Files Description
@@ -257,26 +239,16 @@ results/
 | `*.virus_coverage_windows.tsv` | Coverage statistics across viral genomes |
 | `*.third.filt.sorted.bam` | Filtered alignment file (used for read extraction) |
 
-#### IAV Serotype
+#### Host Reads
 | File | Description |
 |------|-------------|
-| `*_per_serotype_summary.tsv` | Summary of influenza A serotype assignments |
-
-#### Mpoxclade
-| File | Description |
-|------|--------------|
-| `*_per_clade_summary.tsv` | Summary of monkeypox clade assignments |
+| `*_host_read_counts.tsv` | Per-sample host read counts (total reads, host-aligned reads) |
+| `host_reads_summary.tsv` | Combined host read counts for all samples in a category |
 
 #### Vector Read Removal
 | File | Description |
 |------|--------------|
 | `*_primary_alignments.csv` | Statistics on reads aligned to vector sequences |
-
-#### SARS-CoV-2 Reads
-| File | Description |
-|------|-------------|
-| `*.sars_cov2.R1.fastq` | Forward reads aligning to SARS-CoV-2 |
-| `*.sars_cov2.R2.fastq` | Reverse reads aligning to SARS-CoV-2 |
 
 ## Troubleshooting
 
@@ -333,9 +305,8 @@ See repository license file.
 If you use this pipeline, please cite:
 
 - **EsViritu**: [https://github.com/cmmr/EsViritu](https://github.com/cmmr/EsViritu)
-- **iav_serotype**: [https://github.com/mtisza1/influenza_a_serotype](https://github.com/mtisza1/influenza_a_serotype)
-- **mpoxclade**: [https://github.com/mtisza1/mpoxclade](https://github.com/mtisza1/mpoxclade)
 - **vrr**: [https://github.com/mtisza1/vector_read_removal](https://github.com/mtisza1/vector_read_removal)
+- **minimap2**: Li H. (2018). Minimap2: pairwise alignment for nucleotide sequences. Bioinformatics.
 - **fastp**: Chen S, et al. (2018). fastp: an ultra-fast all-in-one FASTQ preprocessor. Bioinformatics.
 - **Snakemake**: Mölder F, et al. (2021). Sustainable data analysis with Snakemake. F1000Research.
 

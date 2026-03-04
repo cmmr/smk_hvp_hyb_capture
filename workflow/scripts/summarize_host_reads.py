@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Summarize IAV serotype results across all samples in a directory.
+Summarize host read counts across all samples in a directory.
 
-Combines all *_per_serotype_summary.tsv files into a single summary table
-with an added unique_id column.
+Combines all *_host_read_counts.tsv files into a single summary table.
 """
 
 import argparse
@@ -15,12 +14,12 @@ import polars as pl
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Summarize IAV serotype results across samples"
+        description="Summarize host read counts across samples"
     )
     parser.add_argument(
         "--input-dir",
         required=True,
-        help="Directory containing *_per_serotype_summary.tsv files",
+        help="Directory containing *_host_read_counts.tsv files",
     )
     parser.add_argument(
         "--output",
@@ -30,48 +29,32 @@ def parse_args():
     return parser.parse_args()
 
 
-def extract_unique_id(filepath: Path) -> str:
-    """Extract unique_id from filename like {unique_id}_per_serotype_summary.tsv."""
-    return filepath.name.replace("_per_serotype_summary.tsv", "")
-
-
 def main():
     args = parse_args()
     
     input_dir = Path(args.input_dir)
     output_path = Path(args.output)
     
-    # Find all per-sample summary files (recursive search)
-    summary_files = list(input_dir.glob("**/*_per_serotype_summary.tsv"))
+    # Find all per-sample host read count files (recursive search)
+    count_files = list(input_dir.glob("**/*_host_read_counts.tsv"))
     
-    if not summary_files:
-        print(f"[WARNING] No *_per_serotype_summary.tsv files found in {input_dir}", file=sys.stderr)
+    if not count_files:
+        print(f"[WARNING] No *_host_read_counts.tsv files found in {input_dir}", file=sys.stderr)
         # Create empty output file
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.touch()
         return
     
-    print(f"[INFO] Found {len(summary_files)} summary files", file=sys.stderr)
+    print(f"[INFO] Found {len(count_files)} host read count files", file=sys.stderr)
     
     dfs = []
-    for filepath in sorted(summary_files):
-        unique_id = extract_unique_id(filepath)
-        
+    for filepath in sorted(count_files):
         try:
-            # Read the summary file
             df = pl.read_csv(filepath, separator="\t")
             
-            # Skip empty files
             if df.height == 0:
                 print(f"[INFO] Skipping empty file: {filepath.name}", file=sys.stderr)
                 continue
-            
-            # Add unique_id as first column
-            df = df.with_columns(pl.lit(unique_id).alias("unique_id"))
-            
-            # Reorder to put unique_id first
-            cols = ["unique_id"] + [c for c in df.columns if c != "unique_id"]
-            df = df.select(cols)
             
             dfs.append(df)
             
