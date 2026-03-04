@@ -418,7 +418,7 @@ rule summarize_esviritu:
 # Module: Host Read Quantification
 # =============================================================================
 rule calculate_host_reads:
-    """Align reads to host genome and count aligned reads (no files saved)."""
+    """Map reads to host genome and count aligned reads (no files saved)."""
     input:
         r1=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R1.fastq"),
         r2=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R2.fastq"),
@@ -443,9 +443,9 @@ rule calculate_host_reads:
             TOTAL_READS=$(cat {input.r1} {input.r2} | awk 'NR % 4 == 1' | wc -l)
             echo "[$(date)] Total input reads: $TOTAL_READS"
             
-            # Align to host genome with minimap2 and count aligned reads (no files saved)
-            HOST_ALIGNED=$(minimap2 -a -x sr -t {threads} {params.host_genome} {input.r1} {input.r2} \
-                | samtools view -F 4 -c -)
+            # Map to host genome with strobealign in mapping-only mode (-x)
+            # PAF output contains only mapped reads, so line count = aligned reads
+            HOST_ALIGNED=$(strobealign -x -U -t {threads} --use-index {params.host_genome} {input.r1} {input.r2} | wc -l)
             echo "[$(date)] Host-aligned reads: $HOST_ALIGNED"
             
             # Write results

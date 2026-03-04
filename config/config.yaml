@@ -20,7 +20,7 @@ esviritu_db: "/biolib/prod/db/esviritu_DBs/v3.2.4"
 vector_fasta: "/data/prod/db/vector_dbs/nihcqv_hiv1/vector_seqs.fna"
 
 # Path to host genome for host read quantification
-host_genome: "/biolib/prod/db/chm13v2phix/chm13v2phix.mmi"
+host_genome: "/data/tisza/data/human_genome/chm13v2.fna"
 
 # -----------------------------------------------------------------------------
 # Output directories
