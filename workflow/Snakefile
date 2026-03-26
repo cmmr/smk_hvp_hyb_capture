@@ -4,7 +4,7 @@ Decompresses reads, runs EsViritu for viral detection, and quantifies host reads
 
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 import os
 import sys
@@ -417,7 +417,7 @@ rule summarize_esviritu:
 # Module: Host Read Quantification
 # =============================================================================
 rule calculate_host_reads:
-    """Map reads to host genome and count aligned reads (no files saved)."""
+    """Map reads to host genome, filter low-quality alignments, and count."""
     input:
         r1=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R1.fastq"),
         r2=str(TEMP_ROOT / "{category}" / "03_vrr" / "{unique_id}.R2.fastq"),
@@ -432,25 +432,20 @@ rule calculate_host_reads:
         mem_mb=HOST_READS_MEM_MB,
         partition="cmmr",
     params:
+        script=workflow.source_path("scripts/strobealign_filt.py"),
         host_genome=HOST_GENOME,
     shell:
         """
         (
             echo "[$(date)] Calculating host reads for {wildcards.unique_id}"
             
-            # Count total input reads (R1 + R2)
-            TOTAL_READS=$(cat {input.r1} {input.r2} | awk 'NR % 4 == 1' | wc -l)
-            echo "[$(date)] Total input reads: $TOTAL_READS"
-            
-            # Map to host genome with strobealign in mapping-only mode (-x)
-            # PAF output contains only mapped reads, so line count = aligned reads
-            HOST_ALIGNED=$(strobealign -x -U -t {threads} --use-index {params.host_genome} {input.r1} {input.r2} | wc -l)
-            echo "[$(date)] Host-aligned reads: $HOST_ALIGNED"
-            
-            # Write results
-            mkdir -p $(dirname {output.counts})
-            printf "unique_id\ttotal_reads\thost_aligned_reads\n" > {output.counts}
-            printf "{wildcards.unique_id}\t$TOTAL_READS\t$HOST_ALIGNED\n" >> {output.counts}
+            python {params.script} \
+                --reference {params.host_genome} \
+                --r1 {input.r1} \
+                --r2 {input.r2} \
+                --threads {threads} \
+                --sample-id {wildcards.unique_id} \
+                --output {output.counts}
             
             echo "[$(date)] Done"
         ) &> {log}

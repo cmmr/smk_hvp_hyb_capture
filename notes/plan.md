@@ -101,14 +101,18 @@ Make a snakemake pipeline to decompress hybrid capture virome sequencing reads f
 - inputs
 	- vector-removed read files path (tempfile)
 - config
-	- host genome path
+	- host genome path (FASTA or pre-built .sti index)
 	- threads: 8
 	- memory 8g
 	- conda env: preprocess
 - actions
-	- count total input reads (R1 + R2)
-	- align to host genome with `minimap2 -a -x sr` piped to `samtools view -F 4 -c`
-	- no BAM or alignment files saved (pipe only)
+	- python script `strobealign_filt.py`:
+		- count total input reads (R1 + R2)
+		- align to host genome with `strobealign` (SAM mode, `--use-index -U --no-progress`)
+		- stream SAM through `pysam`, filter low-quality alignments (align length ≥ 100, align proportion ≥ 0.9, align accuracy ≥ 0.8)
+		- count quality-filtered alignments
+		- no BAM or alignment files saved (pipe only)
+	- write per-sample TSV with counts
 - outputs
 	- {unique_ID}_host_read_counts.tsv (columns: unique_id, total_reads, host_aligned_reads)
 

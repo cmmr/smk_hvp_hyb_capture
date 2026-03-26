@@ -1,6 +1,6 @@
 # Snakemake Virome Pipeline for Hybrid Capture Data
 
-**Latest Version: 0.1.1**
+**Latest Version: 0.1.2**
 
 A Snakemake pipeline for processing hybrid capture virome sequencing data. This pipeline decompresses sequencing reads, runs `EsViritu` for viral detection and profiling, and quantifies host reads.
 
@@ -19,7 +19,7 @@ The pipeline performs preprocessing, broad viral detection, and host read quanti
 4. **EsViritu** — Broad viral detection, taxonomic profiling, and coverage analysis
 
 ### Host Read Quantification
-5. **Calculate Host Reads** — Aligns reads to a host genome (e.g. human) with `minimap2` and counts aligned reads (no files saved)
+5. **Calculate Host Reads** — Maps reads to a host genome (e.g. human) with `strobealign`, filters low-quality alignments, and counts quality-filtered aligned reads (no BAM/SAM files saved)
 6. **Summarize Host Reads** — Aggregates per-sample host read counts into a per-category summary
 
 #### Schematic
@@ -88,6 +88,7 @@ smk_hvp_hyb_capture/
 ├── workflow/
 │   ├── Snakefile             # Main pipeline definition
 │   ├── scripts/
+│   │   ├── strobealign_filt.py      # Host read alignment + quality filtering
 │   │   └── summarize_host_reads.py  # Host read count summarization
 │   ├── envs/
 │   │   ├── preprocess.yaml   # Conda env for decompression/fastp/vrr/host reads
@@ -309,7 +310,7 @@ If you use this pipeline, please cite:
 
 - **EsViritu**: [https://github.com/cmmr/EsViritu](https://github.com/cmmr/EsViritu)
 - **vrr**: [https://github.com/mtisza1/vector_read_removal](https://github.com/mtisza1/vector_read_removal)
-- **minimap2**: Li H. (2018). Minimap2: pairwise alignment for nucleotide sequences. Bioinformatics.
+- **strobealign**: Sahlin K. (2022). Strobealign: flexible seed size enables ultra-fast and accurate read alignment. Genome Biology.
 - **fastp**: Chen S, et al. (2018). fastp: an ultra-fast all-in-one FASTQ preprocessor. Bioinformatics.
 - **Snakemake**: Mölder F, et al. (2021). Sustainable data analysis with Snakemake. F1000Research.
 
